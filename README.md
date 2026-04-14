@@ -1,8 +1,8 @@
 # axor-claude
 
-[![CI](https://github.com/Bucha11/axor-claude/actions/workflows/ci.yml/badge.svg)](https://github.com/Bucha11/axor-claude/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/axor-claude)](https://pypi.org/project/axor-claude/)
-[![Python](https://img.shields.io/pypi/pyversions/axor-claude)](https://pypi.org/project/axor-claude/)
+[![CI](https://github.com/Bucha11/axor-claude/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Bucha11/axor-claude/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/axor-claude?cacheSeconds=300)](https://pypi.org/project/axor-claude/)
+[![Python](https://img.shields.io/pypi/pyversions/axor-claude?cacheSeconds=300)](https://pypi.org/project/axor-claude/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 
