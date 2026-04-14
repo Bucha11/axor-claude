@@ -1,0 +1,120 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout axor-core
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/axor-core
+          path: axor-core
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          pip install -e axor-core/
+          pip install -e ".[dev]"
+
+      - name: Static analysis — no governance in adapter
+        run: |
+          python - << 'EOF'
+          import re, os, sys
+          gov_patterns = [r'\bPolicySelector\b', r'\bCapabilityResolver\b', r'\bIntentLoop\b']
+          anthropic_allowed = {"axor_claude/executor.py", "axor_claude/events.py"}
+          issues = []
+          for root, dirs, files in os.walk("axor_claude"):
+              dirs[:] = [d for d in dirs if not d.startswith("__")]
+              for f in files:
+                  if not f.endswith(".py"):
+                      continue
+                  path = os.path.join(root, f)
+                  src  = open(path).read()
+                  rel  = path.replace("\\", "/")
+                  for line in src.splitlines():
+                      stripped = line.strip()
+                      if stripped.startswith("#"):
+                          continue
+                      for pat in gov_patterns:
+                          if re.search(pat, stripped):
+                              issues.append(f"GOV_LOGIC: {rel}: {stripped[:60]}")
+                  if rel not in anthropic_allowed:
+                      for line in src.splitlines():
+                          if re.match(r"\s*(import anthropic|from anthropic)", line):
+                              issues.append(f"ANTHROPIC_OUTSIDE_EXECUTOR: {rel}")
+          if issues:
+              print("\n".join(issues))
+              sys.exit(1)
+          print("✓ adapter architecture clean")
+          EOF
+
+      - name: Run unit tests
+        run: pytest tests/unit/ -v --tb=short
+
+  publish:
+    name: Publish to PyPI
+    needs: test
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment: pypi
+
+    permissions:
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify tag matches package version
+        run: |
+          python - << 'EOF'
+          import pathlib
+          import re
+          import sys
+          import tomllib
+
+          ref = "${{ github.ref_name }}"
+          m = re.fullmatch(r"v(\d+\.\d+\.\d+)", ref)
+          if not m:
+              print(f"Tag {ref!r} must match vX.Y.Z")
+              sys.exit(1)
+
+          tag_version = m.group(1)
+          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+          pkg_version = data["project"]["version"]
+
+          if tag_version != pkg_version:
+              print(f"Version mismatch: tag={tag_version}, pyproject={pkg_version}")
+              sys.exit(1)
+
+          print(f"Version check passed: {pkg_version}")
+          EOF
+
+      - name: Build
+        run: |
+          pip install hatchling build
+          python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
