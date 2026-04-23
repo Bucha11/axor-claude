@@ -101,6 +101,9 @@ class SearchHandler(ToolHandler):
         max_results: int,
         context_lines: int,
     ) -> str:
+        if len(pattern) > 500:
+            return f"Pattern too long ({len(pattern)} chars, max 500)"
+
         flags = 0 if case_sensitive else re.IGNORECASE
         try:
             regex = re.compile(pattern, flags)

@@ -194,7 +194,7 @@ class ClaudeCodeExecutor(Invokable):
             # stream one round
             tool_uses_this_round: list[dict] = []
             assistant_content: list[dict] = []
-            got_stop = False
+            # (loop terminates on STOP via break or natural stream end)
 
             try:
                 async with self._client.messages.stream(
@@ -225,11 +225,13 @@ class ClaudeCodeExecutor(Invokable):
                                         )
                                         # fire streaming callback for CLI
                                         if self._text_callback is not None:
-                                            self._text_callback(text)
+                                            try:
+                                                self._text_callback(text)
+                                            except Exception:
+                                                pass
                                     yield event
 
                                 case ExecutorEventKind.STOP:
-                                    got_stop = True
                                     yield event
 
                                 case ExecutorEventKind.ERROR:

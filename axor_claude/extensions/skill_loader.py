@@ -10,6 +10,9 @@ from axor_core.contracts.extension import (
 )
 
 
+MAX_FRAGMENT_BYTES = 100_000
+
+
 class ClaudeSkillLoader(ExtensionLoader):
     """
     Loads skills from CLAUDE.md and .claude/skills/ directory.
@@ -75,9 +78,12 @@ class ClaudeSkillLoader(ExtensionLoader):
 
     def _read(self, path: Path) -> str:
         try:
-            return path.read_text(encoding="utf-8").strip()
+            content = path.read_text(encoding="utf-8").strip()
         except (OSError, UnicodeDecodeError):
             return ""
+        if len(content) > MAX_FRAGMENT_BYTES:
+            content = content[:MAX_FRAGMENT_BYTES] + "\n[...truncated by axor]"
+        return content
 
     def _infer_tools(self, content: str) -> list[str]:
         """Infer which tools a skill likely needs from its content."""

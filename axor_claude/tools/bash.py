@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import sys
 from typing import Any
 
 from axor_core.capability.executor import ToolHandler
@@ -56,7 +57,7 @@ class BashHandler(ToolHandler):
             stderr=stderr_dest,
             cwd=cwd,
             env=env,
-            preexec_fn=os.setsid,   # new process group → clean SIGTERM
+            preexec_fn=os.setsid if sys.platform != "win32" else None,   # new process group → clean SIGTERM
         )
 
         try:
@@ -70,6 +71,11 @@ class BashHandler(ToolHandler):
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                 await asyncio.sleep(0.5)
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                # wait for zombie cleanup
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    pass
             except ProcessLookupError:
                 pass
             return f"[timeout after {timeout}s]\n$ {command}"

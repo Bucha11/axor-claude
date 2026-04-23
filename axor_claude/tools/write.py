@@ -42,11 +42,8 @@ class WriteHandler(ToolHandler):
         resolved = os.path.abspath(path)
         parent = os.path.dirname(resolved)
 
-        if create_dirs and not os.path.exists(parent):
+        if create_dirs:
             os.makedirs(parent, exist_ok=True)
-
-        if not os.path.exists(parent):
-            raise FileNotFoundError(f"write: parent directory does not exist: {parent}")
 
         if mode == "append":
             return self._append(resolved, content, encoding)

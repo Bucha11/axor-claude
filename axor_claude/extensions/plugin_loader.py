@@ -95,7 +95,10 @@ class ClaudePluginLoader(ExtensionLoader):
                     ))
 
             # tools
-            for tool_def in manifest.get("tools", []):
+            tools_raw = manifest.get("tools", [])
+            if not isinstance(tools_raw, list):
+                tools_raw = []
+            for tool_def in tools_raw:
                 tool_name = tool_def.get("name", "")
                 if not tool_name:
                     continue
@@ -113,7 +116,10 @@ class ClaudePluginLoader(ExtensionLoader):
                 })
 
             # commands
-            for cmd_def in manifest.get("commands", []):
+            commands_raw = manifest.get("commands", [])
+            if not isinstance(commands_raw, list):
+                commands_raw = []
+            for cmd_def in commands_raw:
                 cmd_name = cmd_def.get("name", "")
                 if not cmd_name:
                     continue
@@ -124,7 +130,10 @@ class ClaudePluginLoader(ExtensionLoader):
                 ))
 
             # hooks
-            for hook_def in manifest.get("hooks", []):
+            hooks_raw = manifest.get("hooks", [])
+            if not isinstance(hooks_raw, list):
+                hooks_raw = []
+            for hook_def in hooks_raw:
                 event_kind = hook_def.get("event_kind", "")
                 handler    = hook_def.get("handler", "")
                 if not event_kind or not handler:

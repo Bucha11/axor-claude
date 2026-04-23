@@ -142,7 +142,7 @@ class TestBuildToolDefinitions:
         assert defs == []
 
     def test_all_canonical_tools(self):
-        allowed = frozenset(["read", "write", "bash", "search", "glob", "spawn_child"])
+        allowed = frozenset(["read", "write", "bash", "search", "glob"])
         defs = build_tool_definitions(allowed)
         names = {d["name"] for d in defs}
         assert names == allowed

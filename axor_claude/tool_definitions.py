@@ -8,7 +8,10 @@ Only tools that appear in envelope.capabilities.allowed_tools
 are included — capability resolver already enforced policy.
 """
 
+import threading
 from typing import Any
+
+_REGISTRY_LOCK = threading.Lock()
 
 # Map from axor-core canonical tool name → Anthropic tool definition
 _TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
@@ -152,28 +155,6 @@ _TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
         },
     },
 
-    "spawn_child": {
-        "name": "spawn_child",
-        "description": (
-            "Create a child governed agent to handle a subtask. "
-            "The child operates under derived governance constraints. "
-            "Use for parallelizable or clearly isolated subtasks."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "task": {
-                    "type": "string",
-                    "description": "The subtask for the child agent to complete.",
-                },
-                "context_hint": {
-                    "type": "string",
-                    "description": "Hint about what context the child will need.",
-                },
-            },
-            "required": ["task"],
-        },
-    },
 }
 
 
@@ -201,4 +182,5 @@ def register_tool_definition(name: str, definition: dict[str, Any]) -> None:
     Called by extension loaders to add tool definitions
     for tools registered via ExtensionTool.
     """
-    _TOOL_DEFINITIONS[name] = definition
+    with _REGISTRY_LOCK:
+        _TOOL_DEFINITIONS[name] = definition
