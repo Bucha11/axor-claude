@@ -54,13 +54,35 @@ class _ToolUseBlock:
             self.input_json += delta.partial_json
 
     def parse_args(self) -> dict[str, Any]:
+        """Decode the streamed tool_use input JSON.
+
+        Returns a dict on success; on malformed JSON returns
+        ``{"_axor_parse_error": "<reason>", "_raw": "<original>"}`` so
+        downstream tool handlers receive an obviously-flagged dict
+        instead of being handed a `str` they will then crash on. Empty
+        input is treated as no-args.
+        """
         import json
         if not self.input_json.strip():
             return {}
         try:
-            return json.loads(self.input_json)
-        except json.JSONDecodeError:
-            return {"_raw": self.input_json}
+            parsed = json.loads(self.input_json)
+        except json.JSONDecodeError as exc:
+            # Cap raw payload to avoid pushing megabytes back through the
+            # tool result if the model produced garbage.
+            return {
+                "_axor_parse_error": f"invalid JSON in tool input: {exc.msg}",
+                "_raw": self.input_json[:4000],
+            }
+        # The Anthropic schema mandates an object for tool_use.input. If a
+        # model returns an array/string/number, surface it as a parse error
+        # rather than letting the handler choke on `args.get(...)`.
+        if not isinstance(parsed, dict):
+            return {
+                "_axor_parse_error": f"tool_use input is not a JSON object (got {type(parsed).__name__})",
+                "_raw": self.input_json[:4000],
+            }
+        return parsed
 
 
 @dataclass
@@ -84,6 +106,8 @@ class StreamNormalizer:
     _blocks: dict[int, _TextBlock | _ToolUseBlock] = field(default_factory=dict)
     _input_tokens: int = 0
     _output_tokens: int = 0
+    _cache_creation_input_tokens: int = 0
+    _cache_read_input_tokens: int = 0
 
     def process(self, sdk_event) -> list[ExecutorEvent]:
         """
@@ -104,6 +128,12 @@ class StreamNormalizer:
                     usage = getattr(msg, "usage", None)
                     if usage:
                         self._input_tokens = getattr(usage, "input_tokens", 0)
+                        self._cache_creation_input_tokens = getattr(
+                            usage, "cache_creation_input_tokens", 0
+                        ) or 0
+                        self._cache_read_input_tokens = getattr(
+                            usage, "cache_read_input_tokens", 0
+                        ) or 0
                 return []
 
             case "content_block_start":
@@ -159,9 +189,24 @@ class StreamNormalizer:
 
             case "message_delta":
                 # final usage + stop reason
+                # Anthropic streaming spec: message_delta carries the final
+                # aggregated usage. Cache fields land HERE (not message_start)
+                # on first call when cache is being created — the API only
+                # knows the cache_creation_input_tokens after writing the cache.
+                # message_start has initial input_tokens, message_delta has
+                # the final cache attribution. Take the max() so we never lose
+                # values that were already populated at message_start.
                 usage = getattr(sdk_event, "usage", None)
                 if usage:
                     self._output_tokens = getattr(usage, "output_tokens", 0)
+                    self._cache_creation_input_tokens = max(
+                        self._cache_creation_input_tokens,
+                        getattr(usage, "cache_creation_input_tokens", 0) or 0,
+                    )
+                    self._cache_read_input_tokens = max(
+                        self._cache_read_input_tokens,
+                        getattr(usage, "cache_read_input_tokens", 0) or 0,
+                    )
                 return []
 
             case "message_stop":
@@ -172,6 +217,8 @@ class StreamNormalizer:
                             "input_tokens":  self._input_tokens,
                             "output_tokens": self._output_tokens,
                             "tool_tokens":   0,  # included in input_tokens by Anthropic
+                            "cache_creation_input_tokens": self._cache_creation_input_tokens,
+                            "cache_read_input_tokens":     self._cache_read_input_tokens,
                         }
                     },
                     node_id=self.node_id,

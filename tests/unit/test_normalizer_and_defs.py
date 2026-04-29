@@ -9,13 +9,39 @@ from axor_claude.normalizer import (
 from axor_claude.tool_definitions import build_tool_definitions, register_tool_definition
 
 
+class TestBuildToolDefinitionsDeterministic:
+    """Tool order MUST be byte-stable across calls or Anthropic's prefix cache
+    misses on every turn (frozenset iteration is non-deterministic across
+    process runs)."""
+
+    def test_same_input_returns_same_order(self):
+        a = build_tool_definitions(frozenset({"read", "write", "bash", "search", "glob"}))
+        b = build_tool_definitions(frozenset({"read", "write", "bash", "search", "glob"}))
+        assert [t["name"] for t in a] == [t["name"] for t in b]
+
+    def test_alphabetical_order(self):
+        out = build_tool_definitions(frozenset({"read", "write", "bash", "search", "glob"}))
+        names = [t["name"] for t in out]
+        assert names == sorted(names)
+
+    def test_subset_preserves_order(self):
+        # A 4-tool subset and the full 5-tool set must produce the same prefix
+        # of tool defs — that's what enables incremental cache reuse if a
+        # caller varies their tool selection (we order by name, so the
+        # relative order is preserved).
+        full = build_tool_definitions(frozenset({"read", "write", "search"}))
+        partial = build_tool_definitions(frozenset({"read", "search"}))
+        assert [t["name"] for t in partial] == ["read", "search"]
+        assert [t["name"] for t in full] == ["read", "search", "write"]
+
+
 class MockMsg:
     class usage:
         input_tokens = 500
         output_tokens = 120
 
     stop_reason = "end_turn"
-    model = "claude-sonnet-4-5"
+    model = "claude-sonnet-4-6"
     id = "msg_abc123"
 
     class _TextBlock:
@@ -46,7 +72,30 @@ class TestExtractUsage:
         class NoUsage:
             pass
         result = extract_usage(NoUsage())
-        assert result == {"input_tokens": 0, "output_tokens": 0, "tool_tokens": 0}
+        assert result == {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "tool_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        }
+
+    def test_extracts_cache_tokens(self):
+        class CachedMsg:
+            class usage:
+                input_tokens = 200
+                output_tokens = 50
+                cache_creation_input_tokens = 1000
+                cache_read_input_tokens = 8000
+        result = extract_usage(CachedMsg())
+        assert result["cache_creation_input_tokens"] == 1000
+        assert result["cache_read_input_tokens"] == 8000
+
+    def test_handles_missing_cache_fields(self):
+        # Older models / responses with no cache attrs at all
+        result = extract_usage(MockMsg())
+        assert result["cache_creation_input_tokens"] == 0
+        assert result["cache_read_input_tokens"] == 0
 
 
 class TestExtractStopReason:

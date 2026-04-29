@@ -30,7 +30,7 @@ from axor_core.contracts.result import ExecutorEvent, ExecutorEventKind
 from axor_claude.events import StreamNormalizer
 from axor_claude.tool_definitions import build_tool_definitions
 
-DEFAULT_MODEL = "claude-sonnet-4-5"
+DEFAULT_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS = 8192
 
 _DEFAULT_SYSTEM_PROMPT = """You are an expert software engineer assistant.
@@ -53,7 +53,9 @@ class ToolResultBus:
     executor calls drain() at the start of each round to get pending results.
 
     One stable bus per executor instance.
-    It is reset at the start of each stream() execution.
+    It is reset at the start of each stream() execution; reset also drops any
+    queued items so late pushes from a prior cancelled run cannot leak into
+    the next round.
     Thread-safe via asyncio.Queue.
     """
 
@@ -63,7 +65,12 @@ class ToolResultBus:
         self._expected: int = 0
 
     def reset(self) -> None:
-        """Reset bus state before a new stream() execution starts."""
+        """Reset bus state before a new stream() execution starts.
+
+        Drops any queued items left over from a previous run; cancelled or
+        timed-out drains can otherwise leave entries in the queue that would
+        be picked up by the next drain with mismatched tool_use_ids.
+        """
         self._queue = asyncio.Queue()
         self._expected = 0
 
@@ -75,25 +82,41 @@ class ToolResultBus:
         """intent_loop calls this after executing a tool."""
         self._queue.put_nowait((tool_use_id, result))
 
-    async def drain(self, timeout: float = 30.0) -> dict[str, Any]:
+    async def drain(
+        self,
+        timeout: float = 30.0,
+        cancel_token: Any = None,
+    ) -> dict[str, Any]:
         """
         Wait for all expected tool results and return them.
         Returns {tool_use_id: result} mapping.
+
+        If `cancel_token` is supplied, drain returns early as soon as the
+        token is set — partial results collected so far are returned. Without
+        a token, behavior is the legacy timeout-only wait.
         """
         results: dict[str, Any] = {}
         deadline = asyncio.get_event_loop().time() + timeout
 
+        # Build a cancel-wait task once if we have a token. asyncio.wait
+        # accepts already-pending awaitables, so we re-add it each iteration
+        # by checking is_cancelled directly — cheap and avoids managing a
+        # background task lifetime here.
         while len(results) < self._expected:
+            if cancel_token is not None and cancel_token.is_cancelled():
+                break
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
                 break
+            # Cap each iteration's wait so cancel_token polling stays responsive.
+            step = min(remaining, 0.25)
             try:
                 tool_use_id, result = await asyncio.wait_for(
-                    self._queue.get(), timeout=remaining
+                    self._queue.get(), timeout=step
                 )
                 results[tool_use_id] = result
             except asyncio.TimeoutError:
-                break
+                continue
 
         self._expected = 0
         return results
@@ -114,7 +137,7 @@ class ClaudeCodeExecutor(Invokable):
 
     Args:
         api_key:    Anthropic API key. None → reads ANTHROPIC_API_KEY env var.
-        model:      Claude model. Default: claude-sonnet-4-5
+        model:      Claude model. Default: claude-sonnet-4-6
         max_tokens: Max tokens per response. Default: 8192
         base_url:   Optional custom API base URL.
     """
@@ -127,6 +150,7 @@ class ClaudeCodeExecutor(Invokable):
         base_url: str | None = None,
         system_prompt: str | None = None,
         max_retries: int = 2,
+        enable_prompt_cache: bool = True,
     ) -> None:
         try:
             import anthropic
@@ -139,6 +163,12 @@ class ClaudeCodeExecutor(Invokable):
         self._model = model
         self._max_tokens = max_tokens
         self._system_prompt = system_prompt or _DEFAULT_SYSTEM_PROMPT
+        # Anthropic prompt caching — marks the stable prefix (system + tools)
+        # with cache_control so re-sends cost 0.1x on hit, 1.25x on write.
+        # Pinned/skill content lives in the user message and would need a
+        # separate breakpoint; that's not covered here — only system + tool
+        # defs, which is the always-stable part of the request.
+        self._enable_prompt_cache = enable_prompt_cache
         self._client = anthropic.AsyncAnthropic(
             api_key=api_key,
             max_retries=max_retries,
@@ -180,6 +210,12 @@ class ClaudeCodeExecutor(Invokable):
             5. If Claude produces no tool_use → yield STOP, done
         """
         tools = build_tool_definitions(envelope.capabilities.allowed_tools)
+        if self._enable_prompt_cache and tools:
+            # Cache breakpoint on the LAST tool def caches all tool defs +
+            # everything before them (the system prompt). One breakpoint covers
+            # the entire static prefix.
+            tools = [*tools[:-1], {**tools[-1], "cache_control": {"type": "ephemeral"}}]
+        system_param = self._build_system_param()
         messages = self._build_initial_messages(envelope)
         normalizer = StreamNormalizer(node_id=envelope.node_id)
 
@@ -202,7 +238,7 @@ class ClaudeCodeExecutor(Invokable):
                     max_tokens=self._max_tokens,
                     messages=messages,
                     tools=tools if tools else [],
-                    system=self._system_prompt,
+                    system=system_param,
                 ) as sdk_stream:
                     async for sdk_event in sdk_stream:
                         if envelope.cancel_token.is_cancelled():
@@ -223,12 +259,22 @@ class ClaudeCodeExecutor(Invokable):
                                                 "text": text,
                                             }
                                         )
-                                        # fire streaming callback for CLI
+                                        # Fire streaming callback for CLI.
+                                        # Catch broadly so a buggy callback
+                                        # never crashes the executor, but log
+                                        # the failure so it isn't invisible.
+                                        # KeyboardInterrupt is BaseException —
+                                        # not caught here — and propagates as
+                                        # expected.
                                         if self._text_callback is not None:
                                             try:
                                                 self._text_callback(text)
-                                            except Exception:
-                                                pass
+                                            except Exception as cb_exc:
+                                                import logging as _lg
+                                                _lg.getLogger("axor.claude.executor").warning(
+                                                    "text_callback raised: %s", cb_exc,
+                                                    exc_info=True,
+                                                )
                                     yield event
 
                                 case ExecutorEventKind.STOP:
@@ -239,22 +285,21 @@ class ClaudeCodeExecutor(Invokable):
                                     return
 
             except Exception as exc:
-                # distinguish transient from fatal errors
+                # distinguish transient from fatal errors. Anthropic SDK uses
+                # OverloadedError (HTTP 529) and other names that change between
+                # versions, so name-based matching errs on the side of inclusion.
                 exc_type = type(exc).__name__
                 is_transient = exc_type in (
                     "RateLimitError",
                     "InternalServerError",
                     "APIConnectionError",
                     "APITimeoutError",
+                    "OverloadedError",
                 )
-
-                if is_transient and not envelope.cancel_token.is_cancelled():
-                    # transient — wait and let caller retry via next run()
-                    import asyncio as _aio
-
-                    wait = 2.0 if "RateLimitError" in exc_type else 1.0
-                    await _aio.sleep(wait)
-
+                # We do not retry inside stream() — the SDK itself retries up to
+                # `max_retries` on connect errors, and higher-level retry belongs
+                # in the caller (intent_loop / session). Yield the error event
+                # with `transient=...` so the caller can decide.
                 yield ExecutorEvent(
                     kind=ExecutorEventKind.ERROR,
                     payload={
@@ -293,7 +338,10 @@ class ClaudeCodeExecutor(Invokable):
             if envelope.cancel_token.is_cancelled():
                 return
 
-            results = await self._bus.drain(timeout=60.0)
+            results = await self._bus.drain(
+                timeout=60.0,
+                cancel_token=envelope.cancel_token,
+            )
 
             if envelope.cancel_token.is_cancelled():
                 return
@@ -310,6 +358,30 @@ class ClaudeCodeExecutor(Invokable):
                 for tp in tool_uses_this_round
             ]
             messages.append({"role": "user", "content": tool_result_blocks})
+
+    def _build_system_param(self):
+        """
+        Build the `system` argument for messages.stream().
+
+        With caching enabled, returns a list of text blocks with cache_control.
+        Without caching, returns a plain string (the legacy form).
+
+        Two breakpoints (system + last tool) are intentional: the system one
+        keeps a cache hit on `system` alone when the tool list changes between
+        turns (envelope.capabilities.allowed_tools is policy-derived and may
+        vary). The tool one extends the cached prefix to include tool defs
+        when the tool list is stable. Anthropic allows up to 4 breakpoints,
+        so two is comfortable.
+        """
+        if not self._enable_prompt_cache:
+            return self._system_prompt
+        return [
+            {
+                "type": "text",
+                "text": self._system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
 
     def _build_initial_messages(
         self, envelope: ExecutionEnvelope

@@ -5,6 +5,8 @@ from typing import Any
 
 from axor_core.capability.executor import ToolHandler
 
+from axor_claude.tools._sandbox import resolve_safe
+
 
 class ReadHandler(ToolHandler):
     """
@@ -41,7 +43,9 @@ class ReadHandler(ToolHandler):
         if not path:
             raise ValueError("read: 'path' argument is required")
 
-        resolved = os.path.abspath(path)
+        # Resolves symlinks BEFORE deny-list check so a friendly-named symlink
+        # under cwd cannot redirect to ~/.ssh/id_rsa or /etc/shadow.
+        resolved = resolve_safe(path, for_write=False)
 
         if not os.path.exists(resolved):
             raise FileNotFoundError(f"read: file not found: {path}")
@@ -59,16 +63,31 @@ class ReadHandler(ToolHandler):
         return content
 
     def _read_file(self, path: str, encoding: str, max_bytes: int) -> str:
+        """Read up to `max_bytes` bytes (not characters).
+
+        Previously this called `f.read(max_bytes)` in *text* mode, which
+        reads `max_bytes` characters — on multi-byte UTF-8 that overshoots
+        the byte cap, while on encodings that normalize line endings
+        (Windows CRLF) the character count diverges from the byte count
+        the truncation marker advertises.
+        """
         file_size = os.path.getsize(path)
         truncated = file_size > max_bytes
 
+        # Read in binary so the cap is in bytes regardless of encoding.
+        with open(path, "rb") as f:
+            raw = f.read(max_bytes)
+
         try:
-            with open(path, "r", encoding=encoding) as f:
-                content = f.read(max_bytes)
-        except UnicodeDecodeError:
-            # fallback to latin-1 — reads any byte sequence
-            with open(path, "r", encoding="latin-1") as f:
-                content = f.read(max_bytes)
+            content = raw.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            # Decoding may also fail when we cut a multi-byte sequence at
+            # the cap boundary. `errors="replace"` keeps a representable
+            # string; the latin-1 fallback then handles non-UTF8 files.
+            try:
+                content = raw.decode(encoding, errors="replace")
+            except LookupError:
+                content = raw.decode("latin-1", errors="replace")
 
         if truncated:
             content += f"\n[...truncated: file is {file_size:,} bytes, showing first {max_bytes:,}]"

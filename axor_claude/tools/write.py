@@ -6,6 +6,8 @@ from typing import Any
 
 from axor_core.capability.executor import ToolHandler
 
+from axor_claude.tools._sandbox import resolve_safe
+
 
 class WriteHandler(ToolHandler):
     """
@@ -39,7 +41,9 @@ class WriteHandler(ToolHandler):
         if not path:
             raise ValueError("write: 'path' argument is required")
 
-        resolved = os.path.abspath(path)
+        # Reject deny-listed paths and (if configured) anything outside
+        # AXOR_FS_SANDBOX_ROOT before any directories are created.
+        resolved = resolve_safe(path, for_write=True)
         parent = os.path.dirname(resolved)
 
         if create_dirs:

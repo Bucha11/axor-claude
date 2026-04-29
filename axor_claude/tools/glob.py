@@ -2,9 +2,53 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
 from typing import Any
 
 from axor_core.capability.executor import ToolHandler
+
+
+def _compile_glob(pattern: str) -> re.Pattern:
+    """Translate a glob pattern (with `**` semantics) into a regex.
+
+    `fnmatch.translate` treats `**` like `*` (matches anything except `/`),
+    so `src/**/test_*.py` would only catch top-level files in src/. Here:
+        `**`  → match any character (including `/`)
+        `*`   → match any character except `/`
+        `?`   → match any single character except `/`
+        `.`, `+`, `(`, etc. — escaped literally.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "*":
+            if i + 1 < len(pattern) and pattern[i + 1] == "*":
+                out.append(".*")
+                i += 2
+                # consume an optional trailing slash so `**/foo` also matches `foo`
+                if i < len(pattern) and pattern[i] == "/":
+                    out.append("/?")
+                    i += 1
+            else:
+                out.append("[^/]*")
+                i += 1
+        elif ch == "?":
+            out.append("[^/]")
+            i += 1
+        elif ch == "[":
+            # character class — pass through verbatim until matching ]
+            j = pattern.find("]", i + 1)
+            if j == -1:
+                out.append(re.escape(ch))
+                i += 1
+            else:
+                out.append(pattern[i : j + 1])
+                i = j + 1
+        else:
+            out.append(re.escape(ch))
+            i += 1
+    return re.compile("^" + "".join(out) + "$")
 
 
 class GlobHandler(ToolHandler):
@@ -91,9 +135,10 @@ class GlobHandler(ToolHandler):
         path    = path.replace(os.sep, "/")
         pattern = pattern.replace(os.sep, "/")
 
-        # support ** for multi-level matching
+        # `**` requires custom regex translation — fnmatch treats it like `*`
+        # and so silently fails to recurse for `src/**/test_*.py`.
         if "**" in pattern:
-            return fnmatch.fnmatch(path, pattern)
+            return _compile_glob(pattern).match(path) is not None
 
         # without ** — match against filename only if no directory separator in pattern
         if "/" not in pattern:

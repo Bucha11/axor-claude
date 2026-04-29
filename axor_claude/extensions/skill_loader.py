@@ -77,12 +77,35 @@ class ClaudeSkillLoader(ExtensionLoader):
         return ExtensionBundle(fragments=tuple(fragments))
 
     def _read(self, path: Path) -> str:
+        """Read a skill file, capped at MAX_FRAGMENT_BYTES (in bytes).
+
+        Boundary check: refuse to follow symlinks pointing outside `_root`.
+        Prevents a malicious `.claude/skills/foo.md -> /etc/passwd` from
+        being silently injected as system context.
+        """
         try:
-            content = path.read_text(encoding="utf-8").strip()
-        except (OSError, UnicodeDecodeError):
+            resolved = path.resolve()
+            resolved.relative_to(self._root)
+        except (OSError, ValueError):
+            # ValueError = not under root; OSError = symlink loop / missing intermediate
             return ""
-        if len(content) > MAX_FRAGMENT_BYTES:
-            content = content[:MAX_FRAGMENT_BYTES] + "\n[...truncated by axor]"
+        try:
+            raw = resolved.read_bytes()
+        except OSError:
+            return ""
+        if len(raw) > MAX_FRAGMENT_BYTES:
+            raw = raw[:MAX_FRAGMENT_BYTES]
+            try:
+                content = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                # Cap may have cut a multi-byte sequence; replace at the boundary.
+                content = raw.decode("utf-8", errors="replace")
+            content = content.rstrip() + "\n[...truncated by axor]"
+        else:
+            try:
+                content = raw.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                return ""
         return content
 
     def _infer_tools(self, content: str) -> list[str]:

@@ -167,12 +167,31 @@ def build_tool_definitions(
     Only tools that appear in allowed_tools are included.
     Unknown tool names (from extensions) are skipped — they need
     their own definitions registered via register_tool_definition().
+
+    Output order is sorted alphabetically. This is critical for Anthropic
+    prompt caching: the cached prefix must be byte-stable across turns.
+    `frozenset` has non-deterministic iteration order, so iterating it
+    directly would shuffle tools between turns and bust the cache on
+    every call. Sorting is deterministic and cheap.
     """
+    # Read under lock so we get a consistent snapshot even when a plugin
+    # loader is concurrently calling `register_tool_definition`.
+    with _REGISTRY_LOCK:
+        snapshot = dict(_TOOL_DEFINITIONS)
     return [
-        _TOOL_DEFINITIONS[name]
-        for name in allowed_tools
-        if name in _TOOL_DEFINITIONS
+        snapshot[name]
+        for name in sorted(allowed_tools)
+        if name in snapshot
     ]
+
+
+# Names of tools that ship with axor-claude. Re-registering one of these
+# from a plugin is almost certainly a bug or an attack surface — we warn
+# loudly via the logger rather than silently overwriting the built-in.
+_BUILTIN_TOOL_NAMES = frozenset({"read", "write", "bash", "search", "glob"})
+
+import logging as _logging
+_log = _logging.getLogger("axor.claude.tool_registry")
 
 
 def register_tool_definition(name: str, definition: dict[str, Any]) -> None:
@@ -181,6 +200,21 @@ def register_tool_definition(name: str, definition: dict[str, Any]) -> None:
 
     Called by extension loaders to add tool definitions
     for tools registered via ExtensionTool.
+
+    Re-registering a name that already exists logs a warning. Re-registering
+    a built-in name (read/write/bash/search/glob) additionally raises
+    `ValueError` — plugins must not silently shadow core tools.
     """
     with _REGISTRY_LOCK:
+        existing = _TOOL_DEFINITIONS.get(name)
+        if existing is not None:
+            if name in _BUILTIN_TOOL_NAMES:
+                raise ValueError(
+                    f"refusing to overwrite built-in tool definition {name!r}; "
+                    f"choose a different name in your extension"
+                )
+            _log.warning(
+                "tool definition %r is being overwritten (plugin replacing existing definition)",
+                name,
+            )
         _TOOL_DEFINITIONS[name] = definition

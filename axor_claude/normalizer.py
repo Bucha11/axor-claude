@@ -23,12 +23,20 @@ def extract_usage(message) -> dict[str, int]:
     Works with both streaming (via accumulated usage) and
     non-streaming (direct message.usage) responses.
 
-    Returns:
-        {"input_tokens": int, "output_tokens": int, "tool_tokens": int}
+    Returns dict with:
+        input_tokens, output_tokens, tool_tokens,
+        cache_creation_input_tokens, cache_read_input_tokens
     """
+    empty = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
     usage = getattr(message, "usage", None)
     if usage is None:
-        return {"input_tokens": 0, "output_tokens": 0, "tool_tokens": 0}
+        return empty
 
     return {
         "input_tokens":  getattr(usage, "input_tokens", 0),
@@ -36,6 +44,8 @@ def extract_usage(message) -> dict[str, int]:
         # Anthropic includes tool definition tokens in input_tokens
         # tool_tokens is tracked separately for axor budget accounting
         "tool_tokens":   0,
+        "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0) or 0,
+        "cache_read_input_tokens":     getattr(usage, "cache_read_input_tokens", 0) or 0,
     }
 
 

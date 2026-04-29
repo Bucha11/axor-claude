@@ -178,6 +178,30 @@ class TestBashHandler:
         r = await handler.execute({"command": f"python3 -c \"print('x'*600000)\""})
         assert "truncated" in r or len(r) <= BashHandler.MAX_OUTPUT_BYTES + 100
 
+    @pytest.mark.asyncio
+    async def test_secret_envs_not_leaked_to_subprocess(self, handler, monkeypatch):
+        """Regression: parent env was unconditionally forwarded, leaking
+        ANTHROPIC_API_KEY / OPENAI_API_KEY / etc. to every shell.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret-leak-canary")
+        monkeypatch.setenv("MY_RANDOM_TOKEN", "random-leak-canary")
+        # PATH must still pass through.
+        r = await handler.execute({"command": "env"})
+        assert "sk-secret-leak-canary" not in r
+        assert "random-leak-canary" not in r
+        assert "PATH=" in r
+
+    @pytest.mark.asyncio
+    async def test_explicit_env_override_still_works(self, handler, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret-leak-canary")
+        # Caller can re-add a specific var if it's actually needed.
+        r = await handler.execute({
+            "command": "echo $ANTHROPIC_API_KEY",
+            "env": {"ANTHROPIC_API_KEY": "sk-explicit-override"},
+        })
+        assert "sk-explicit-override" in r
+        assert "sk-secret-leak-canary" not in r
+
     def test_name(self):
         assert BashHandler().name == "bash"
 
@@ -214,6 +238,23 @@ class TestGlobHandler:
     async def test_recursive_glob(self, handler, project):
         r = await handler.execute({"pattern": "**/*.py", "cwd": str(project)})
         assert "d.py" in r
+
+    @pytest.mark.asyncio
+    async def test_nested_recursive_glob(self, handler, tmp_path):
+        """Regression: fnmatch treats `**` like `*` (no `/` crossing), so
+        `src/**/test_*.py` previously missed files past the first level.
+        """
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "deep").mkdir()
+        (tmp_path / "src" / "deep" / "nested").mkdir()
+        (tmp_path / "src" / "deep" / "nested" / "test_x.py").write_text("x")
+        (tmp_path / "src" / "test_y.py").write_text("y")
+        (tmp_path / "other.py").write_text("z")
+
+        r = await handler.execute({"pattern": "src/**/test_*.py", "cwd": str(tmp_path)})
+        assert "test_x.py" in r
+        assert "test_y.py" in r
+        assert "other.py" not in r
 
     @pytest.mark.asyncio
     async def test_no_match_message(self, handler, project):
@@ -319,6 +360,29 @@ class TestSearchHandler:
     async def test_empty_pattern_raises(self, handler, tmp_path):
         with pytest.raises(ValueError, match="pattern"):
             await handler.execute({"pattern": "", "path": str(tmp_path)})
+
+    @pytest.mark.asyncio
+    async def test_pattern_starting_with_dash_is_not_a_flag(self, handler, tmp_path):
+        """Regression: argv injection — without `--` separator before the
+        pattern, ripgrep parses `--exec=...` etc. as a flag.
+        """
+        path = tmp_path / "f.txt"
+        path.write_text("--exec=evil here\nordinary line")
+        r = await handler.execute({
+            "pattern": "--exec",
+            "path": str(path),
+            "case_sensitive": True,
+        })
+        # The literal pattern matches the literal text in the file.
+        # If `--` were missing, rg would error out with "unrecognized option".
+        assert "--exec" in r or "no matches" in r
+        assert "unrecognized" not in r.lower()
+
+    @pytest.mark.asyncio
+    async def test_oversized_pattern_capped_before_dispatch(self, handler, tmp_path):
+        big = "a" * 600
+        r = await handler.execute({"pattern": big, "path": str(tmp_path)})
+        assert "Pattern too long" in r
 
     def test_name(self):
         assert SearchHandler().name == "search"

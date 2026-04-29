@@ -13,9 +13,17 @@ class MockEvt:
 
 
 class MockUsage:
-    def __init__(self, input_tokens=0, output_tokens=0):
+    def __init__(
+        self,
+        input_tokens=0,
+        output_tokens=0,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+    ):
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
+        self.cache_creation_input_tokens = cache_creation_input_tokens
+        self.cache_read_input_tokens = cache_read_input_tokens
 
 
 def norm(node_id="n_test"):
@@ -115,6 +123,45 @@ class TestTextResponse:
         stop = next(e for e in events if e.kind == ExecutorEventKind.STOP)
         assert stop.payload["usage"]["input_tokens"] == 500
         assert stop.payload["usage"]["output_tokens"] == 120
+
+    def test_cache_tokens_extracted_from_message_start(self):
+        n = norm()
+        events = []
+        cached_start = MockEvt(
+            type="message_start",
+            message=MockEvt(usage=MockUsage(
+                input_tokens=200,
+                cache_creation_input_tokens=1000,
+                cache_read_input_tokens=8000,
+            )),
+        )
+        for sdk_evt in [
+            cached_start,
+            block_start(0, "text"), text_delta(0, "ok"), block_stop(0),
+            message_delta(50),
+            message_stop(),
+        ]:
+            events.extend(n.process(sdk_evt))
+        stop = next(e for e in events if e.kind == ExecutorEventKind.STOP)
+        assert stop.payload["usage"]["cache_creation_input_tokens"] == 1000
+        assert stop.payload["usage"]["cache_read_input_tokens"] == 8000
+
+    def test_cache_tokens_default_zero_when_absent(self):
+        # message_start with no cache_* attrs at all (older models)
+        class BareUsage:
+            input_tokens = 100
+            output_tokens = 0
+        n = norm()
+        events = []
+        for sdk_evt in [
+            MockEvt(type="message_start", message=MockEvt(usage=BareUsage())),
+            block_start(0, "text"), text_delta(0, "x"), block_stop(0),
+            message_stop(),
+        ]:
+            events.extend(n.process(sdk_evt))
+        stop = next(e for e in events if e.kind == ExecutorEventKind.STOP)
+        assert stop.payload["usage"]["cache_creation_input_tokens"] == 0
+        assert stop.payload["usage"]["cache_read_input_tokens"] == 0
 
 
 class TestToolUseResponse:

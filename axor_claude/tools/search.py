@@ -43,6 +43,12 @@ class SearchHandler(ToolHandler):
         if not pattern:
             raise ValueError("search: 'pattern' argument is required")
 
+        # Cap pattern length on both code paths (was only on the Python
+        # fallback). A 100k-char pattern handed to ripgrep still wastes
+        # process startup and risks pathological matches.
+        if len(pattern) > 500:
+            return f"Pattern too long ({len(pattern)} chars, max 500)"
+
         if shutil.which("rg"):
             return await self._rg_search(
                 pattern, path, glob_filter,
@@ -64,7 +70,7 @@ class SearchHandler(ToolHandler):
         max_results: int,
         context_lines: int,
     ) -> str:
-        cmd = ["rg", "--line-number", "--no-heading"]
+        cmd = ["rg", "--line-number", "--no-heading", "--with-filename"]
 
         if not case_sensitive:
             cmd.append("--ignore-case")
@@ -76,14 +82,24 @@ class SearchHandler(ToolHandler):
             cmd += ["--glob", glob_filter]
 
         cmd += ["--max-count", str(max_results)]
-        cmd += [pattern, path]
+        # `--` ends option parsing: any pattern or path that starts with `-`
+        # (`--exec=…`, `--no-ignore`, etc.) is treated as a positional, not
+        # a ripgrep flag. Without this, an attacker-controlled pattern is an
+        # argv-injection vector.
+        cmd += ["--", pattern, path]
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15.0)
+        timeout = 15.0
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return f"[timeout after {timeout}s] search: {pattern}"
 
         output = stdout.decode("utf-8", errors="replace").strip()
         if not output:
@@ -101,9 +117,7 @@ class SearchHandler(ToolHandler):
         max_results: int,
         context_lines: int,
     ) -> str:
-        if len(pattern) > 500:
-            return f"Pattern too long ({len(pattern)} chars, max 500)"
-
+        # Length cap is already enforced in execute() before dispatch.
         flags = 0 if case_sensitive else re.IGNORECASE
         try:
             regex = re.compile(pattern, flags)

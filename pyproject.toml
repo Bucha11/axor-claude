@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "axor-claude"
-version = "0.1.0"
+version = "0.2.0"
 description = "Claude Code adapter for axor-core governance kernel"
 readme = "README.md"
 license = { text = "MIT" }
@@ -21,8 +21,8 @@ classifiers = [
 ]
 
 dependencies = [
-    "axor-core>=0.1.0",
-    "anthropic>=0.40.0",
+    "axor-core>=0.4.0,<0.5",
+    "anthropic>=0.40.0,<1.0",
 ]
 
 [project.optional-dependencies]
