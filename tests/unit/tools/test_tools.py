@@ -160,6 +160,17 @@ class TestBashHandler:
         assert str(tmp_path) in r
 
     @pytest.mark.asyncio
+    async def test_cwd_outside_sandbox_root_blocked(self, handler, tmp_path, monkeypatch):
+        sandbox = tmp_path / "sandbox"
+        outside = tmp_path / "outside"
+        sandbox.mkdir()
+        outside.mkdir()
+        monkeypatch.setenv("AXOR_FS_SANDBOX_ROOT", str(sandbox))
+
+        with pytest.raises(PermissionError):
+            await handler.execute({"command": "pwd", "cwd": str(outside)})
+
+    @pytest.mark.asyncio
     async def test_env_vars_passed(self, handler):
         r = await handler.execute({
             "command": "echo $MY_VAR",

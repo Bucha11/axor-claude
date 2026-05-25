@@ -245,6 +245,7 @@ class StreamNormalizer:
         tool_use_id: str,
         result: Any,
         node_id: str,
+        is_error: bool = False,
     ) -> dict:
         """
         Build a tool_result message for the Anthropic API.
@@ -255,8 +256,11 @@ class StreamNormalizer:
         """
         import json
         content = result if isinstance(result, str) else json.dumps(result, default=str)
-        return {
+        block = {
             "type":        "tool_result",
             "tool_use_id": tool_use_id,
             "content":     content,
         }
+        if is_error:
+            block["is_error"] = True
+        return block

@@ -17,9 +17,9 @@ from axor_claude.tools.glob import GlobHandler
 from axor_claude.extensions.skill_loader import ClaudeSkillLoader
 from axor_claude.extensions.plugin_loader import ClaudePluginLoader
 from axor_claude.tool_definitions import register_tool_definition
-from axor_claude import normalizer
+from axor_claude._version import get_version
 
-__version__ = "0.1.0"
+__version__ = get_version("axor-claude")
 
 __all__ = [
     "ClaudeCodeExecutor",
@@ -27,7 +27,6 @@ __all__ = [
     "SearchHandler", "GlobHandler",
     "ClaudeSkillLoader", "ClaudePluginLoader",
     "register_tool_definition",
-    "normalizer",
     "make_session",
 ]
 
@@ -40,26 +39,40 @@ def make_session(
     load_plugins=True,
     model=None,
     system_prompt=None,
+    daemon_socket: str | None = None,
+    mode: str = "library",
     **session_kwargs,
 ):
     """
     Convenience factory. Creates GovernedSession with all standard handlers.
+
+    Args:
+        daemon_socket: Unix socket path for AxorDaemon. When set, all tool
+            execution is delegated to the daemon process via DaemonCapabilityClient
+            instead of running in-process. The daemon must be started separately.
+        mode: Execution isolation mode — "library" (default, in-process),
+            "production" (LockedExecutor + governance bypass blocked),
+            "strict" (superset of production with additional containment).
 
     Example:
         session = axor_claude.make_session(soft_token_limit=100_000)
         result = await session.run("refactor auth module")
     """
     from axor_core import GovernedSession, CapabilityExecutor
+    from axor_core.contracts.mode import ExecutionMode
 
-    _handlers = {
-        "read": ReadHandler, "write": WriteHandler, "bash": BashHandler,
-        "search": SearchHandler, "glob": GlobHandler,
-    }
-
-    cap = CapabilityExecutor()
-    for name in tools:
-        if cls := _handlers.get(name):
-            cap.register(cls())
+    if daemon_socket is not None:
+        from axor_core.capability.daemon_client import DaemonCapabilityClient
+        cap = DaemonCapabilityClient(socket_path=daemon_socket)
+    else:
+        _handlers = {
+            "read": ReadHandler, "write": WriteHandler, "bash": BashHandler,
+            "search": SearchHandler, "glob": GlobHandler,
+        }
+        cap = CapabilityExecutor()
+        for name in tools:
+            if cls := _handlers.get(name):
+                cap.register(cls())
 
     loaders = []
     if load_skills:
@@ -77,5 +90,6 @@ def make_session(
         executor=ClaudeCodeExecutor(api_key=api_key, **executor_kwargs),
         capability_executor=cap,
         extension_loaders=loaders,
+        mode=ExecutionMode(mode),
         **session_kwargs,
     )

@@ -3,17 +3,68 @@ from __future__ import annotations
 """
 Normalize Anthropic API response objects into axor-core types.
 
-Used for:
-  - Extracting token usage from completed messages
-  - Building ExecutionResult metadata from API response
-  - Parsing stop reasons for governance decisions
-
 StreamNormalizer in events.py handles the streaming path.
-This module handles response-level metadata that is only
-available after the full message completes.
+This module handles response-level metadata only available after a full message.
 """
 
 from typing import Any
+
+from axor_core.contracts.anomaly import NormalizedIntent
+from axor_core.contracts.intent import Intent, IntentKind
+from axor_core.errors.exceptions import NormalizerError, UnknownProviderFormatError
+from axor_core.node.normalizer import IntentNormalizer
+
+_PROVIDER = "anthropic"
+
+
+class ClaudeNormalizer:
+    """
+    Normalizes Anthropic tool-use events into axor-core NormalizedIntent.
+
+    Accepted input formats:
+    - dict with "tool" + "args"  (axor internal / axor-claude event dict)
+    - ToolUseBlock-like object   (streaming: has .name and .input)
+
+    Raises UnknownProviderFormatError for unrecognized formats.
+    Raises NormalizerError for structurally invalid events (e.g. parse errors).
+    """
+
+    def __init__(self, workdir: str | None = None) -> None:
+        self._normalizer = IntentNormalizer(workdir=workdir)
+
+    def normalize(self, raw_event: Any) -> NormalizedIntent:
+        tool_name, args = self._extract(raw_event)
+        intent = Intent(
+            kind=IntentKind.TOOL_CALL,
+            payload={"tool": tool_name, "args": args},
+            node_id="",
+        )
+        return self._normalizer.normalize(intent)
+
+    def _extract(self, raw_event: Any) -> tuple[str, dict]:
+        if isinstance(raw_event, dict):
+            if "_axor_parse_error" in raw_event:
+                raise NormalizerError(
+                    _PROVIDER,
+                    f"event contains parse error marker: {raw_event['_axor_parse_error']}",
+                )
+            tool = raw_event.get("tool")
+            args = raw_event.get("args", {})
+            if not tool:
+                raise UnknownProviderFormatError(_PROVIDER, "dict missing 'tool' key")
+            if not isinstance(args, dict):
+                raise NormalizerError(_PROVIDER, "'args' must be a dict")
+            return str(tool), args
+
+        # ToolUseBlock from Anthropic SDK (streaming or non-streaming)
+        name = getattr(raw_event, "name", None)
+        if name is not None:
+            input_data = getattr(raw_event, "input", {}) or {}
+            if not isinstance(input_data, dict):
+                raise NormalizerError(_PROVIDER, "ToolUseBlock.input must be a dict")
+            return str(name), input_data
+
+        raise UnknownProviderFormatError(_PROVIDER, type(raw_event).__name__)
 
 
 def extract_usage(message) -> dict[str, int]:

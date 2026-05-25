@@ -9,6 +9,8 @@ from typing import Any
 
 from axor_core.capability.executor import ToolHandler
 
+from axor_claude.tools._sandbox import resolve_safe
+
 
 # Env vars passed through to subprocess. Anything not in this list is dropped
 # unless the caller explicitly forwards it via the `env` argument. Avoiding
@@ -104,7 +106,9 @@ class BashHandler(ToolHandler):
         if not command:
             raise ValueError("bash: 'command' argument is required")
 
+        cwd = resolve_safe(cwd, for_write=False)
         env = _build_safe_env(extra_env)
+        env["PWD"] = cwd
 
         stderr_dest = asyncio.subprocess.PIPE if capture_stderr else asyncio.subprocess.DEVNULL
 

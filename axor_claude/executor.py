@@ -348,11 +348,11 @@ class ClaudeCodeExecutor(Invokable):
 
             # build tool_result message for next round
             tool_result_blocks = [
-                StreamNormalizer(node_id=envelope.node_id).tool_result_event(
+                _tool_result_block(
+                    normalizer=StreamNormalizer(node_id=envelope.node_id),
                     tool_use_id=tp["tool_use_id"],
-                    result=results.get(
-                        tp["tool_use_id"], "[tool result unavailable]"
-                    ),
+                    result=results.get(tp["tool_use_id"]),
+                    missing=tp["tool_use_id"] not in results,
                     node_id=envelope.node_id,
                 )
                 for tp in tool_uses_this_round
@@ -421,3 +421,28 @@ class ClaudeCodeExecutor(Invokable):
         parts.append(f"Task: {envelope.task}")
 
         return [{"role": "user", "content": "\n\n".join(parts)}]
+
+
+def _tool_result_block(
+    *,
+    normalizer: StreamNormalizer,
+    tool_use_id: str,
+    result: Any,
+    missing: bool,
+    node_id: str,
+) -> dict:
+    if not missing:
+        return normalizer.tool_result_event(
+            tool_use_id=tool_use_id,
+            result=result,
+            node_id=node_id,
+        )
+    return normalizer.tool_result_event(
+        tool_use_id=tool_use_id,
+        result={
+            "error": "tool_result_unavailable",
+            "message": "Tool execution did not return a result before the executor timeout.",
+        },
+        node_id=node_id,
+        is_error=True,
+    )

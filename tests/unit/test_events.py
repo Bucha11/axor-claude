@@ -305,3 +305,9 @@ class TestToolResultEvent:
         n = norm()
         result = n.tool_result_event("tu_03", None, "n1")
         assert result["content"] == "null"
+
+    def test_error_result_sets_error_flag(self):
+        n = norm()
+        result = n.tool_result_event("tu_04", "failed", "n1", is_error=True)
+        assert result["type"] == "tool_result"
+        assert result["is_error"] is True

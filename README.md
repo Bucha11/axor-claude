@@ -364,9 +364,24 @@ ANTHROPIC_API_KEY=sk-ant-... pytest tests/integration/ -m integration
 ## Requirements
 
 - Python 3.11+
-- `axor-core >= 0.1.0`
+- [`axor-core`](https://github.com/Bucha11/axor-core) >= 0.5.0
 - `anthropic >= 0.40.0`
 - `ripgrep` (optional — faster search, falls back to Python grep)
+
+---
+
+## Ecosystem
+
+| Package | Role |
+|---------|------|
+| [`axor-core`](https://github.com/Bucha11/axor-core) | Governance kernel |
+| [`axor-cli`](https://github.com/Bucha11/axor-cli) | Governed terminal runtime — uses this adapter |
+| [`axor-benchmarks`](https://github.com/Bucha11/axor-benchmarks) | Benchmarks governed vs raw Claude |
+| [`axor-classifier-simple`](https://github.com/Bucha11/axor-classifier-simple) | ML task signal derivation (optional) |
+| [`axor-classifier-llm`](https://github.com/Bucha11/axor-classifier-llm) | LLM verifier for gray-zone escalation (optional) |
+| [`axor-langchain`](https://github.com/Bucha11/axor-langchain) | LangChain governance middleware |
+| [`axor-memory-sqlite`](https://github.com/Bucha11/axor-memory-sqlite) | Cross-session memory (SQLite) |
+| [`axor-telemetry`](https://github.com/Bucha11/axor-telemetry) | Privacy-preserving governance feedback |
 
 ---
 

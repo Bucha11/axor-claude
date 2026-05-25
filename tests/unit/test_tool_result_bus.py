@@ -4,7 +4,8 @@ import asyncio
 
 import pytest
 
-from axor_claude.executor import ToolResultBus
+from axor_claude.events import StreamNormalizer
+from axor_claude.executor import ToolResultBus, _tool_result_block
 from axor_core.contracts.cancel import CancelReason, CancelToken
 
 
@@ -71,3 +72,17 @@ async def test_drain_without_cancel_token_unchanged():
     bus.push("x", "y")
     results = await bus.drain(timeout=1.0)
     assert results == {"x": "y"}
+
+
+async def test_missing_tool_result_becomes_error_block():
+    block = _tool_result_block(
+        normalizer=StreamNormalizer(node_id="n"),
+        tool_use_id="tu_missing",
+        result=None,
+        missing=True,
+        node_id="n",
+    )
+    assert block["type"] == "tool_result"
+    assert block["tool_use_id"] == "tu_missing"
+    assert block["is_error"] is True
+    assert "tool_result_unavailable" in block["content"]
