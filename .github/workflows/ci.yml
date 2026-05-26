@@ -34,7 +34,8 @@ jobs:
       - name: Install axor-core from PyPI (pinned to triggering version)
         if: github.event_name == 'repository_dispatch'
         run: |
-          pip install "axor-core==${{ github.event.client_payload.version }}"
+          VERSION="${{ github.event.client_payload.version }}"
+          pip install "axor-core==${VERSION#v}"
 
       - uses: actions/setup-python@v5
         with:
