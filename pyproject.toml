@@ -21,7 +21,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "axor-core>=0.6.0,<0.7",
+    "axor-core>=0.8.0,<0.9",
     "anthropic>=0.40.0,<1.0",
 ]
 
@@ -43,6 +43,9 @@ packages = ["axor_claude"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Integration tests make real, billable API calls and require ANTHROPIC_API_KEY.
+# They are opt-in: run them explicitly with `pytest -m integration`.
+addopts = "-m 'not integration'"
 markers = [
     "integration: requires ANTHROPIC_API_KEY",
 ]
