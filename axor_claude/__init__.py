@@ -17,6 +17,7 @@ from axor_claude.tools.glob import GlobHandler
 from axor_claude.extensions.skill_loader import ClaudeSkillLoader
 from axor_claude.extensions.plugin_loader import ClaudePluginLoader
 from axor_claude.tool_definitions import register_tool_definition
+from axor_claude.security import SecurityObservers, build_observers
 from axor_claude._version import get_version
 
 __version__ = get_version("axor-claude")
@@ -27,6 +28,7 @@ __all__ = [
     "SearchHandler", "GlobHandler",
     "ClaudeSkillLoader", "ClaudePluginLoader",
     "register_tool_definition",
+    "SecurityObservers", "build_observers",
     "make_session",
 ]
 
@@ -41,6 +43,8 @@ def make_session(
     system_prompt=None,
     daemon_socket: str | None = None,
     mode: str = "library",
+    probe_pipeline=None,
+    enable_sentinel: bool = False,
     **session_kwargs,
 ):
     """
@@ -53,6 +57,11 @@ def make_session(
         mode: Execution isolation mode — "library" (default, in-process),
             "production" (LockedExecutor + governance bypass blocked),
             "strict" (superset of production with additional containment).
+        probe_pipeline: Optional axor-probe ``ProbePipeline``. Passing one wires an
+            axor-probe context tap onto the session (requires the ``[security]``
+            extra). Leaving it ``None`` keeps probe observation off.
+        enable_sentinel: When ``True``, wire an axor-sentinel session sink onto the
+            session (requires the ``[security]`` extra).
 
     Example:
         session = axor_claude.make_session(soft_token_limit=100_000)
@@ -86,10 +95,28 @@ def make_session(
     if system_prompt:
         executor_kwargs["system_prompt"] = system_prompt
 
-    return GovernedSession(
+    # Composition root: merge caller-supplied taps/sinks with the optional
+    # security observers (probe tap / sentinel sink) before building the session.
+    context_taps = list(session_kwargs.pop("context_taps", None) or [])
+    session_sinks = list(session_kwargs.pop("session_sinks", None) or [])
+
+    observers = build_observers(
+        probe_pipeline=probe_pipeline,
+        enable_sentinel=enable_sentinel,
+    )
+    if observers.context_tap is not None:
+        context_taps.append(observers.context_tap)
+    if observers.session_sink is not None:
+        session_sinks.append(observers.session_sink)
+
+    session = GovernedSession(
         executor=ClaudeCodeExecutor(api_key=api_key, **executor_kwargs),
         capability_executor=cap,
         extension_loaders=loaders,
         mode=ExecutionMode(mode),
+        context_taps=context_taps or None,
+        session_sinks=session_sinks or None,
         **session_kwargs,
     )
+    session.axor_security = observers
+    return session
