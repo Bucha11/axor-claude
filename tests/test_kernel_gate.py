@@ -170,3 +170,61 @@ async def test_concurrent_calls_are_decided_after_each_other_E():
         await cap.execute(intent("send_money", {"recipient": "X1", "amount": 1}), caps)
     assert await read == "1810.0"
     assert e.value.category == "taint_enforcement"
+
+
+# MODEL.md 9.15: a description grant needs the platform's parser of the source's output
+SLACK = {
+    "grant_args": {"add_user_to_channel": {"channel": "string", "user": "string"}},
+    "egress_sinks": ["add_user_to_channel"],
+    "driving_args": {"add_user_to_channel": ["channel", "user"]},
+    "operator_sets": {"add_user_to_channel": {"channel": ["general", "random", "private"]}},
+    "operator_sets_refuse_above": "benign",
+    "consequence_overrides": {"add_user_to_channel": "consequential"},
+    "description_sources": {"get_channels": [{"entity": "channel", "shape": "names", "complete": True}]},
+    "description_targets": {"channel": {"value": ["add_user_to_channel.channel"]}},
+}
+CHANNELS = ["general", "random", "private", "External_0"]
+DESCRIBED = "Add Charlie to the channel starting with External"
+ADD = {"channel": "External_0", "user": "Charlie"}
+
+
+def channels_parser(tool, result):
+    """The operator's parser for this platform: get_channels returns the list itself."""
+    return list(result) if tool == "get_channels" and isinstance(result, list) else None
+
+
+class _Returns(_Handler):
+    def __init__(self, name, ran, out):
+        super().__init__(name, ran)
+        self._out = out
+
+    async def execute(self, args):
+        self._ran.append((self._name, dict(args)))
+        return self._out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("structured", [channels_parser, None])
+async def test_description_grant_needs_the_parser(structured):
+    """Without the operator's parser no description grant is built: the described call is
+    refused, never admitted; with it the call runs."""
+    ran: list = []
+    cap = GatedCapabilityExecutor(Gate.from_config(SLACK, structured=structured))
+    cap.register(_Returns("get_channels", ran, list(CHANNELS)))
+    cap.register(_Returns("add_user_to_channel", ran, "added"))
+    ex = ScriptedExecutor([("get_channels", {}), ("add_user_to_channel", ADD)])
+    policy = ExecutionPolicy(tool_policy=ToolPolicy(extra_allowed=("get_channels", "add_user_to_channel")))
+    await GatedSession(executor=ex, capability_executor=cap, default_policy=policy).run(DESCRIBED)
+    if structured is None:
+        assert _denied(ex.seen[1]) and [r[0] for r in ran] == ["get_channels"]
+        denied = [e for e in cap.gate.governor.trace_events if "denied" in str(e.kind).lower()]
+        assert denied and denied[-1].payload.get("category") == "operator_set"
+    else:
+        assert ex.seen[1] == "added" and ran[-1] == ("add_user_to_channel", ADD)
+
+
+def test_make_session_hands_the_parser_to_the_gate():
+    from axor_claude import make_session
+
+    s = make_session(api_key="sk-ant-test", governance=SLACK, structured=channels_parser, load_skills=False, load_plugins=False)
+    assert s._cap_executor.gate._structured is channels_parser

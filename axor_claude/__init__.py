@@ -50,6 +50,7 @@ def make_session(
     enable_sentinel: bool = False,
     governance=None,
     confirmer=None,
+    structured=None,
     **session_kwargs,
 ):
     """
@@ -73,6 +74,12 @@ def make_session(
             ``None`` gates under an empty configuration. With ``daemon_socket`` the
             daemon's own ``--governance`` decides, and the request is sent to it.
         confirmer: The operator's L4 confirmation channel (in process only).
+        structured: The platform's parser of a description source's output
+            (axor-core MODEL.md 9.15): ``structured(tool, result) -> structure | None``.
+            Written by the operator for the tools it deploys; the package ships none.
+            Without it no description grant is computed, so a call only a description
+            would authorize is refused. With ``daemon_socket``: the daemon's
+            ``--structured``.
 
     Example:
         session = axor_claude.make_session(soft_token_limit=100_000)
@@ -81,7 +88,7 @@ def make_session(
     from axor_core.contracts.mode import ExecutionMode
 
     if daemon_socket is not None:
-        if governance is not None or confirmer is not None:
+        if governance is not None or confirmer is not None or structured is not None:
             raise ValueError("with daemon_socket the daemon's --governance decides; "
                              "pass governance / confirmer to the daemon, not here")
         from axor_core.capability.daemon_client import DaemonCapabilityClient
@@ -91,7 +98,8 @@ def make_session(
             "read": ReadHandler, "write": WriteHandler, "bash": BashHandler,
             "search": SearchHandler, "glob": GlobHandler,
         }
-        cap = GatedCapabilityExecutor(Gate.from_config(governance or {}, confirmer=confirmer))
+        cap = GatedCapabilityExecutor(Gate.from_config(governance or {}, confirmer=confirmer,
+                                                       structured=structured))
         for name in tools:
             if cls := _handlers.get(name):
                 cap.register(cls())
