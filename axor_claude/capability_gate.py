@@ -11,6 +11,7 @@ Byte-identical in axor-claude and axor-openrouter.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from axor_core.capability.daemon_client import DaemonCapabilityClient
@@ -38,6 +39,7 @@ class GatedCapabilityExecutor(CapabilityExecutor):
         super().__init__()
         self.gate = gate
         self._calls = 0
+        self._serial = asyncio.Lock()  # one call at a time, check to registration
 
     async def execute(self, intent: Intent, capabilities: Capabilities) -> Any:
         if intent.kind != IntentKind.TOOL_CALL:
@@ -49,16 +51,17 @@ class GatedCapabilityExecutor(CapabilityExecutor):
         handler = self._handlers.get(tool)
         if handler is None:
             raise ToolNotFoundError(tool=tool)
-        self._calls += 1
-        verdict = self.gate.check(tool, args, call_key=f"{tool}#{self._calls}")
-        if not isinstance(verdict, Admitted):
-            raise GovernanceRefused(tool, verdict.category, verdict.reason)
-        try:
-            result = await handler.execute(verdict.args)
-        except BaseException:
-            self.gate.fail(verdict)
-            raise
-        view = self.gate.finish(verdict, tool, result)
+        async with self._serial:
+            self._calls += 1
+            verdict = self.gate.check(tool, args, call_key=f"{tool}#{self._calls}")
+            if not isinstance(verdict, Admitted):
+                raise GovernanceRefused(tool, verdict.category, verdict.reason)
+            try:
+                result = await handler.execute(verdict.args)
+            except BaseException:
+                self.gate.fail(verdict)
+                raise
+            view = self.gate.finish(verdict, tool, result)
         for callback in self._post_callbacks:
             try:
                 await callback(tool, verdict.args, view)

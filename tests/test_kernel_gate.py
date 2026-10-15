@@ -22,7 +22,7 @@ from axor_claude.capability_gate import GatedCapabilityExecutor, GatedSession
 from axor_claude.gate import Gate
 
 CFG = os.path.join(os.path.dirname(__file__), "fixtures", "banking_c9v4.yaml")
-GATE_SHA256 = "a4d7ece81b69e2718a6f6ec6b4a7a365a9c3e8196edad9d1d75d619319ec4022"
+GATE_SHA256 = "950916b2d32e364e55c9aaeacab822e6f60e4306db5464bdfd8458347c098502"
 PAY = {"recipient": "DE89370400440532013000", "amount": 50.0, "subject": "rent", "date": "2024-01-01"}
 BILL = "Bill for December 2023. Pay 98.70 to UK12345678901234567890."
 OUTPUT = {"send_money": "sent", "read_file": BILL, "get_balance": "1810.0"}
@@ -133,3 +133,40 @@ def test_make_session_builds_a_gated_session():
     s = make_session(api_key="sk-ant-test", governance=CFG, load_skills=False, load_plugins=False)
     assert isinstance(s, GatedSession) and isinstance(s._cap_executor, GatedCapabilityExecutor)
     assert s._cap_executor.registered_tools() == frozenset({"read", "write", "bash", "search", "glob"})
+
+
+@pytest.mark.asyncio
+async def test_concurrent_calls_are_decided_after_each_other_E():
+    """Two calls executed concurrently on one session (child nodes share the capability
+    executor): an egress proposed while a secret read runs is decided after the read
+    registered, so the floor refuses it."""
+    import asyncio
+
+    from axor_core.contracts.envelope import Capabilities
+    from axor_core.contracts.intent import Intent, IntentKind
+
+    from axor_claude.capability_gate import GovernanceRefused
+
+    started = asyncio.Event()
+
+    class Slow(_Handler):
+        async def execute(self, args):
+            started.set()
+            await asyncio.sleep(0.2)
+            return "1810.0"
+    cap = GatedCapabilityExecutor(Gate.from_config(
+        {"sensitive_sources": ["get_balance"], "egress_sinks": ["send_money"]}))
+    cap.register(Slow("get_balance", []))
+    cap.register(_Handler("send_money", []))
+    caps = Capabilities(allowed_tools=frozenset({"get_balance", "send_money"}), allow_children=False,
+                        allow_nested_children=False, allow_context_expansion=False, allow_export=False,
+                        allow_mutation=True, max_child_depth=0)
+
+    def intent(tool, args):
+        return Intent(kind=IntentKind.TOOL_CALL, payload={"tool": tool, "args": args}, node_id="n")
+    read = asyncio.ensure_future(cap.execute(intent("get_balance", {}), caps))
+    await started.wait()
+    with pytest.raises(GovernanceRefused) as e:
+        await cap.execute(intent("send_money", {"recipient": "X1", "amount": 1}), caps)
+    assert await read == "1810.0"
+    assert e.value.category == "taint_enforcement"
