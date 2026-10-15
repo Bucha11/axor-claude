@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — kernel gate
+
+### Changed
+- Every in-process tool call now goes through the current kernel's per-call gate
+  (`ToolCallGovernor`, axor-core `claude/model-m1`: task-scoped grants, references,
+  floor modes, consequence class). `make_session(governance=..., confirmer=...)`;
+  `GatedCapabilityExecutor` runs the handler on the arguments the kernel resolved and
+  returns the output as the agent may see it; `GatedSession.run` seeds the request.
+  With `daemon_socket` the request is sent in the daemon handshake.
+
+### Fixed
+- `make_session` raised `TypeError` on the current kernel (`session_sinks`).
+
 ## 0.2.0 — 2026-04-29
 
 ### Added

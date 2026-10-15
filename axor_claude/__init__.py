@@ -18,6 +18,8 @@ from axor_claude.extensions.skill_loader import ClaudeSkillLoader
 from axor_claude.extensions.plugin_loader import ClaudePluginLoader
 from axor_claude.tool_definitions import register_tool_definition
 from axor_claude.security import SecurityObservers, build_observers
+from axor_claude.gate import Gate
+from axor_claude.capability_gate import GatedCapabilityExecutor, GatedSession, GovernanceRefused
 from axor_claude._version import get_version
 
 __version__ = get_version("axor-claude")
@@ -29,6 +31,7 @@ __all__ = [
     "ClaudeSkillLoader", "ClaudePluginLoader",
     "register_tool_definition",
     "SecurityObservers", "build_observers",
+    "Gate", "GatedCapabilityExecutor", "GatedSession", "GovernanceRefused",
     "make_session",
 ]
 
@@ -45,6 +48,8 @@ def make_session(
     mode: str = "library",
     probe_pipeline=None,
     enable_sentinel: bool = False,
+    governance=None,
+    confirmer=None,
     **session_kwargs,
 ):
     """
@@ -62,15 +67,23 @@ def make_session(
             extra). Leaving it ``None`` keeps probe observation off.
         enable_sentinel: When ``True``, wire an axor-sentinel session sink onto the
             session (requires the ``[security]`` extra).
+        governance: The kernel gate's configuration — a ``GovernanceConfig``, the path
+            of its YAML, or its mapping. Every in-process tool call goes through that
+            gate (``ToolCallGovernor``: grants, references, floor, consequence class);
+            ``None`` gates under an empty configuration. With ``daemon_socket`` the
+            daemon's own ``--governance`` decides, and the request is sent to it.
+        confirmer: The operator's L4 confirmation channel (in process only).
 
     Example:
         session = axor_claude.make_session(soft_token_limit=100_000)
         result = await session.run("refactor auth module")
     """
-    from axor_core import GovernedSession, CapabilityExecutor
     from axor_core.contracts.mode import ExecutionMode
 
     if daemon_socket is not None:
+        if governance is not None or confirmer is not None:
+            raise ValueError("with daemon_socket the daemon's --governance decides; "
+                             "pass governance / confirmer to the daemon, not here")
         from axor_core.capability.daemon_client import DaemonCapabilityClient
         cap = DaemonCapabilityClient(socket_path=daemon_socket)
     else:
@@ -78,7 +91,7 @@ def make_session(
             "read": ReadHandler, "write": WriteHandler, "bash": BashHandler,
             "search": SearchHandler, "glob": GlobHandler,
         }
-        cap = CapabilityExecutor()
+        cap = GatedCapabilityExecutor(Gate.from_config(governance or {}, confirmer=confirmer))
         for name in tools:
             if cls := _handlers.get(name):
                 cap.register(cls())
@@ -98,7 +111,6 @@ def make_session(
     # Composition root: merge caller-supplied taps/sinks with the optional
     # security observers (probe tap / sentinel sink) before building the session.
     context_taps = list(session_kwargs.pop("context_taps", None) or [])
-    session_sinks = list(session_kwargs.pop("session_sinks", None) or [])
 
     observers = build_observers(
         probe_pipeline=probe_pipeline,
@@ -106,16 +118,16 @@ def make_session(
     )
     if observers.context_tap is not None:
         context_taps.append(observers.context_tap)
-    if observers.session_sink is not None:
-        session_sinks.append(observers.session_sink)
+    # the kernel's GovernedSession takes one session_sink (the caller's wins)
+    if observers.session_sink is not None and "session_sink" not in session_kwargs:
+        session_kwargs["session_sink"] = observers.session_sink
 
-    session = GovernedSession(
+    session = GatedSession(
         executor=ClaudeCodeExecutor(api_key=api_key, **executor_kwargs),
         capability_executor=cap,
         extension_loaders=loaders,
         mode=ExecutionMode(mode),
         context_taps=context_taps or None,
-        session_sinks=session_sinks or None,
         **session_kwargs,
     )
     session.axor_security = observers
