@@ -33,6 +33,35 @@ __all__ = [
 ]
 
 
+def _supports_directives(session_cls) -> bool:
+    import inspect
+    return "directives" in inspect.signature(session_cls.__init__).parameters
+
+
+class _FanOutSink:
+    """Several session sinks behind core's single ``session_sink`` slot. One
+    failing sink never stops the others (the SessionSink contract: never raise)."""
+
+    def __init__(self, sinks):
+        self.sinks = list(sinks)
+
+    async def on_session_closed(self, record) -> None:
+        for sink in self.sinks:
+            try:
+                await sink.on_session_closed(record)
+            except Exception:  # noqa: BLE001 — observer failure must not leak
+                import logging
+                logging.getLogger("axor_claude").exception("session sink failed")
+
+
+def _combine_sinks(sinks):
+    if not sinks:
+        return None
+    if len(sinks) == 1:
+        return sinks[0]
+    return _FanOutSink(sinks)
+
+
 def make_session(
     api_key=None,
     *,
@@ -45,6 +74,7 @@ def make_session(
     mode: str = "library",
     probe_pipeline=None,
     enable_sentinel: bool = False,
+    plane=None,
     **session_kwargs,
 ):
     """
@@ -62,6 +92,10 @@ def make_session(
             extra). Leaving it ``None`` keeps probe observation off.
         enable_sentinel: When ``True``, wire an axor-sentinel session sink onto the
             session (requires the ``[security]`` extra).
+        plane: Optional Control-Plane handle (axor-wrap ``PlaneAdmission``). It
+            becomes the session's ``admission`` (operator pause/stop holds the
+            loop at the intent boundary) and, on axor-core >= 0.12.1, its
+            ``directives`` (operator excision, test-bench injection, call cap).
 
     Example:
         session = axor_claude.make_session(soft_token_limit=100_000)
@@ -97,8 +131,12 @@ def make_session(
 
     # Composition root: merge caller-supplied taps/sinks with the optional
     # security observers (probe tap / sentinel sink) before building the session.
+    # Core takes ONE ``session_sink``; ``session_sinks`` is accepted as a list
+    # for back-compat and fanned out.
     context_taps = list(session_kwargs.pop("context_taps", None) or [])
-    session_sinks = list(session_kwargs.pop("session_sinks", None) or [])
+    sinks = list(session_kwargs.pop("session_sinks", None) or [])
+    if (one := session_kwargs.pop("session_sink", None)) is not None:
+        sinks.insert(0, one)
 
     observers = build_observers(
         probe_pipeline=probe_pipeline,
@@ -107,7 +145,12 @@ def make_session(
     if observers.context_tap is not None:
         context_taps.append(observers.context_tap)
     if observers.session_sink is not None:
-        session_sinks.append(observers.session_sink)
+        sinks.append(observers.session_sink)
+
+    if plane is not None:
+        session_kwargs.setdefault("admission", plane)
+        if _supports_directives(GovernedSession) and hasattr(plane, "take_excision"):
+            session_kwargs.setdefault("directives", plane)
 
     session = GovernedSession(
         executor=ClaudeCodeExecutor(api_key=api_key, **executor_kwargs),
@@ -115,7 +158,7 @@ def make_session(
         extension_loaders=loaders,
         mode=ExecutionMode(mode),
         context_taps=context_taps or None,
-        session_sinks=session_sinks or None,
+        session_sink=_combine_sinks(sinks),
         **session_kwargs,
     )
     session.axor_security = observers

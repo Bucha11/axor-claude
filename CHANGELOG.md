@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.1 — 2026-11-11
+
+### Fixed
+- **`make_session()` crashed on every call** with
+  `TypeError: GovernedSession.__init__() got an unexpected keyword argument
+  'session_sinks'`. Core's parameter is the singular `session_sink`; the adapter
+  now passes that, and fans several sinks (caller's + sentinel) out through one
+  sink that isolates failures. `session_sinks=[...]` is still accepted. Unit
+  tests now build a real session (no network), so this cannot regress silently.
+
+### Added
+- **`make_session(plane=...)`** — pass an axor-wrap `PlaneAdmission` and the
+  session honours Control-Plane pause/stop at the intent boundary; on
+  axor-core >= 0.12.1 the same object is wired as `directives` (operator
+  context excision, test-bench injection, call cap).
+
 ## 0.4.0 — 2026-11-04
 
 A minor bump, not a patch: it carries the `[security]` extra below, which has
