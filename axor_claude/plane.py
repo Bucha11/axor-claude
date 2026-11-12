@@ -416,6 +416,12 @@ class ClaudePlaneObserver:
                 status = "ok"
             text = result if isinstance(result, str) else json.dumps(result, default=str)
             self.recorder.end_tool(rec, text, status=status)
+        # Ship each round's lines as they land, so a running run shows as one
+        # on the plane. An experiment run ships whole, with its claim, instead.
+        if self.linked and self.recorder.experiment is None:
+            lines, run_id, plane = self.recorder.pending_lines(), self.recorder.run_id, self.plane
+            if lines:
+                plane.submit(lambda: plane.connector.post_trace(lines, run_id))
 
     # ── capability layer ──────────────────────────────────────────────────────
 
