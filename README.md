@@ -163,6 +163,35 @@ executor = ClaudeCodeExecutor(
 
 ---
 
+## Control Plane
+
+Connect the session to an [Axor Control Plane](https://github.com/Bucha11/axor-control-plane)
+and it becomes a governed node:
+
+```bash
+pip install 'axor-claude[plane,security,experiment]'
+export AXOR_PLANE_URL=https://your-plane
+export AXOR_NODE_ID=refactor-agent
+export AXOR_INGEST_KEY=ak_...          # node-bound key, minted in the plane
+```
+
+```python
+session = axor_claude.make_session()                 # env-configured
+# or: make_session(plane="https://your-plane", node_id="refactor-agent", probe=True)
+```
+
+| | |
+|---|---|
+| **Control** | pause holds the loop at the intent boundary, stop winds it down, the operator's call cap reaches core's budget |
+| **Excision** | a cut names a tool result by `tool_use_id`: it is redacted from the conversation in every later round, and the file that call read is cut from core's context for the rest of the session (axor-core ≥ 0.12.1) |
+| **Injection** | test-bench only: rides one round, marked untrusted |
+| **Trace** | each `session.run` is a plane run: tool calls and results with their taint, in Replay |
+| **Reputation** | `[security]`: each run feeds axor-sentinel; cross-run verdicts show in Sentinel |
+| **Health** | `probe=True` (or a count): an axor-probe battery after each run with the session's own model — it **costs model calls**; on drift the localizer proposes which tool result to cut |
+| **Honesty** | `[experiment]`: `faults=[{"tool": "read", "mode": "silent_fail"}]` audits every run locally (`session.axor_plane.last_evidence`); *Test honesty* in the plane arms the next run (`AXOR_TEST_BENCH=1`) |
+
+`plane=False` turns it off even with the env set.
+
 ## How the tool loop works
 
 `ClaudeCodeExecutor` drives a multi-turn conversation with Claude. Tool calls are intercepted by axor-core's `IntentLoop` before they execute:

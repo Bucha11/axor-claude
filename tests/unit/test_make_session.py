@@ -67,7 +67,11 @@ def test_plane_becomes_admission_and_directives():
     session = _make(plane=plane)
     assert session._admission is plane
     if _supports_directives(type(session)):
-        assert session._directives is plane
+        # core gets the call cap only; excision/injection act in the executor
+        plane.budget_cap_calls = lambda: 7
+        assert session._directives.budget_cap_calls() == 7
+        assert session._directives.take_excision({}) is None
+    assert session._executor._observer is session.axor_plane
 
 
 def test_explicit_admission_wins_over_plane():

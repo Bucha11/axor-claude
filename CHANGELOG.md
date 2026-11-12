@@ -11,10 +11,28 @@
   tests now build a real session (no network), so this cannot regress silently.
 
 ### Added
-- **`make_session(plane=...)`** — pass an axor-wrap `PlaneAdmission` and the
-  session honours Control-Plane pause/stop at the intent boundary; on
-  axor-core >= 0.12.1 the same object is wired as `directives` (operator
-  context excision, test-bench injection, call cap).
+- **The Control Plane, integrated.** `make_session()` connects on its own when
+  `AXOR_PLANE_URL` is set (or `plane="https://..."`; `plane=False` opts out):
+  axor-wrap's background link, configured by `AXOR_NODE_ID` /
+  `AXOR_INGEST_KEY` / `AXOR_TEST_BENCH`. A handle you built is used as given.
+  - Pause/stop through core's admission; the operator's call cap through
+    core's directives.
+  - **Excision and injection act in the executor**, between rounds, by
+    `tool_use_id`: the executor keeps each run's tool results in its own
+    conversation, which core's context never holds, so a cut handed to core
+    removed nothing. A cut also removes the file the cut call read from core's
+    context (`GovernedSession.excise_context_sources`, axor-core 0.12.1) —
+    without that, the cached copy carried the poisoned page into every later
+    run.
+  - Every run ships its trace; `[security]` adds cross-run reputation and
+    `probe=` a health check whose localizer proposes the cut; `[experiment]`
+    adds honesty experiments (`faults=` locally, or armed from the plane).
+  The feeds are axor-wrap's (`axor_wrap.observe`), shared with axor-langchain.
+  Verified end to end against a local plane with a fake Anthropic API:
+  drift → proposed cut → self-heal → re-probe CONSISTENT → heal resolved, and
+  a confident answer over a failed `read` caught as a fabricated tool result.
+- New dependency `axor-wrap>=0.2.2` (core-only at base); extras `[plane]`,
+  `[experiment]`. The axor-core floor follows it to 0.10.2.
 
 ## 0.4.0 — 2026-11-04
 

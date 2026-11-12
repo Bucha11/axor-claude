@@ -28,7 +28,11 @@ dependencies = [
     # self-consistent — it is THIS change that needs 0.9 as the floor: the new
     # import does not exist before it. Raising the ceiling required the migration.
     # Measured against an installed 0.12.0: 117 tests pass.
-    "axor-core>=0.9,<0.13",
+    "axor-core>=0.10.2,<0.13",
+    # the shared plane feeds (axor_wrap.observe) and link; core-only at base,
+    # so this adds no transport — [plane] does. Its floor (core 0.10.2) is
+    # this package's floor now.
+    "axor-wrap>=0.2.2,<0.3",
     "anthropic>=0.40.0,<1.0",
 ]
 
@@ -39,6 +43,8 @@ dev = [
     "pytest-cov>=5.0",
 ]
 security = ["axor-probe", "axor-sentinel"]
+plane = ["axor-wrap[plane]>=0.2.2,<0.3"]  # Control-Plane link (AXOR_PLANE_URL)
+experiment = ["axor-eval>=0.2.2"]  # honesty experiments: fault injection + audit
 
 [project.urls]
 Repository = "https://github.com/Bucha11/axor-claude"

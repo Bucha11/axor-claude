@@ -75,6 +75,11 @@ def make_session(
     probe_pipeline=None,
     enable_sentinel: bool = False,
     plane=None,
+    node_id: str | None = None,
+    sentinel: bool | None = None,
+    probe: bool | int = False,
+    probe_every: int = 1,
+    faults: list[dict] | None = None,
     **session_kwargs,
 ):
     """
@@ -92,10 +97,26 @@ def make_session(
             extra). Leaving it ``None`` keeps probe observation off.
         enable_sentinel: When ``True``, wire an axor-sentinel session sink onto the
             session (requires the ``[security]`` extra).
-        plane: Optional Control-Plane handle (axor-wrap ``PlaneAdmission``). It
-            becomes the session's ``admission`` (operator pause/stop holds the
-            loop at the intent boundary) and, on axor-core >= 0.12.1, its
-            ``directives`` (operator excision, test-bench injection, call cap).
+        plane: The Control Plane. A URL — or nothing, with ``AXOR_PLANE_URL``
+            set — connects this session as a node (``[plane]`` extra; a
+            background link, configured by ``AXOR_NODE_ID`` /
+            ``AXOR_INGEST_KEY`` / ``AXOR_TEST_BENCH``). A handle you built
+            (axor-wrap ``PlaneLink`` / ``PlaneAdmission``) is used as given;
+            ``False`` turns it off. Pause/stop hold the loop at the intent
+            boundary and the call cap reaches core's budget; excision and
+            test-bench injection act on the conversation between rounds, by
+            ``tool_use_id``. Every run ships its trace; see
+            :mod:`axor_claude.plane`.
+        node_id: The node's name on the plane (default ``claude-<host>``).
+        sentinel: Cross-run reputation on the plane (default: on when
+            ``[security]`` is installed and a link is up).
+        probe: Health check after each run (``True`` = 3 probes, or a count),
+            with the session's own model — it costs model calls.
+        probe_every: Run the health check every N runs.
+        faults: A local honesty experiment, e.g.
+            ``[{"tool": "read", "mode": "silent_fail"}]`` (``[experiment]``):
+            every run is audited and ``session.axor_plane.last_evidence``
+            holds the verdict.
 
     Example:
         session = axor_claude.make_session(soft_token_limit=100_000)
@@ -104,9 +125,30 @@ def make_session(
     from axor_core import GovernedSession, CapabilityExecutor
     from axor_core.contracts.mode import ExecutionMode
 
+    executor_kwargs = {}
+    if model:
+        executor_kwargs["model"] = model
+    if system_prompt:
+        executor_kwargs["system_prompt"] = system_prompt
+    executor = ClaudeCodeExecutor(api_key=api_key, **executor_kwargs)
+
+    from axor_claude.plane import ClaudePlaneObserver, core_directives, resolve_plane
+    plane_handle, owns_plane = resolve_plane(plane, node_id)
+    observer = None
+    if plane_handle is not None or faults:
+        observer = ClaudePlaneObserver(
+            plane=plane_handle, executor=executor, node_id=node_id,
+            sentinel=sentinel, probe=probe, probe_every=probe_every, faults=faults,
+        )
+        executor.set_observer(observer)
+
     if daemon_socket is not None:
         from axor_core.capability.daemon_client import DaemonCapabilityClient
         cap = DaemonCapabilityClient(socket_path=daemon_socket)
+        if faults:
+            import logging
+            logging.getLogger("axor_claude").warning(
+                "faults= needs in-process tools; the daemon runs them — not faulted")
     else:
         _handlers = {
             "read": ReadHandler, "write": WriteHandler, "bash": BashHandler,
@@ -115,19 +157,14 @@ def make_session(
         cap = CapabilityExecutor()
         for name in tools:
             if cls := _handlers.get(name):
-                cap.register(cls())
+                handler = cls()
+                cap.register(observer.wrap_handler(handler) if observer else handler)
 
     loaders = []
     if load_skills:
         loaders.append(ClaudeSkillLoader())
     if load_plugins:
         loaders.append(ClaudePluginLoader())
-
-    executor_kwargs = {}
-    if model:
-        executor_kwargs["model"] = model
-    if system_prompt:
-        executor_kwargs["system_prompt"] = system_prompt
 
     # Composition root: merge caller-supplied taps/sinks with the optional
     # security observers (probe tap / sentinel sink) before building the session.
@@ -147,13 +184,15 @@ def make_session(
     if observers.session_sink is not None:
         sinks.append(observers.session_sink)
 
-    if plane is not None:
-        session_kwargs.setdefault("admission", plane)
-        if _supports_directives(GovernedSession) and hasattr(plane, "take_excision"):
-            session_kwargs.setdefault("directives", plane)
+    if plane_handle is not None:
+        session_kwargs.setdefault("admission", plane_handle)
+        if _supports_directives(GovernedSession):
+            # the call cap only: excision/injection act on the executor's
+            # conversation (the observer), which core's context never holds
+            session_kwargs.setdefault("directives", core_directives(plane_handle))
 
     session = GovernedSession(
-        executor=ClaudeCodeExecutor(api_key=api_key, **executor_kwargs),
+        executor=executor,
         capability_executor=cap,
         extension_loaders=loaders,
         mode=ExecutionMode(mode),
@@ -162,4 +201,34 @@ def make_session(
         **session_kwargs,
     )
     session.axor_security = observers
+    if observer is not None:
+        _bind_observer(session, observer, plane_handle if owns_plane else None)
     return session
+
+
+def _bind_observer(session, observer, owned_link) -> None:
+    """Run boundaries for the observer: each ``session.run`` is one plane run
+    (its trace, audit, health check); ``aclose`` closes a link we opened."""
+    run, aclose = session.run, session.aclose
+
+    async def observed_run(task, *args, **kwargs):
+        observer.start_run()
+        answer = ""
+        try:
+            result = await run(task, *args, **kwargs)
+            answer = getattr(result, "output", "") or ""
+            return result
+        finally:
+            observer.finish_run(answer if isinstance(answer, str) else str(answer))
+
+    async def observed_aclose():
+        try:
+            await aclose()
+        finally:
+            if owned_link is not None:
+                owned_link.close()
+
+    session.run = observed_run
+    session.aclose = observed_aclose
+    session.axor_plane = observer
+    observer.session = session

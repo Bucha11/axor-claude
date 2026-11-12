@@ -179,6 +179,9 @@ class ClaudeCodeExecutor(Invokable):
         self._bus = ToolResultBus()
         self._messages: list[dict] = []
         self._text_callback = None  # set by CLI for streaming output
+        # Control-Plane observer (axor_claude.plane): sees each round's
+        # conversation before it is sent and each round's tool results after.
+        self._observer = None
 
     def set_text_callback(self, callback) -> None:
         """
@@ -187,6 +190,23 @@ class ClaudeCodeExecutor(Invokable):
         callback(chunk: str) -> None
         """
         self._text_callback = callback
+
+    def set_observer(self, observer) -> None:
+        """Attach a round observer: ``before_round(messages) -> messages`` (what
+        is sent — operator excisions and injections apply here, never to the
+        stored conversation) and ``after_round(tool_uses, results, missing)``."""
+        self._observer = observer
+
+    def _observed(self, messages: list[dict]) -> list[dict]:
+        if self._observer is None:
+            return messages
+        try:
+            return self._observer.before_round(messages)
+        except Exception:  # an observer must never break the run
+            import logging as _lg
+            _lg.getLogger("axor.claude.executor").warning(
+                "plane observer failed", exc_info=True)
+            return messages
 
     def get_bus(self) -> ToolResultBus:
         """
@@ -233,10 +253,11 @@ class ClaudeCodeExecutor(Invokable):
             # (loop terminates on STOP via break or natural stream end)
 
             try:
+                sent = self._observed(messages)
                 async with self._client.messages.stream(
                     model=self._model,
                     max_tokens=self._max_tokens,
-                    messages=messages,
+                    messages=sent,
                     tools=tools if tools else [],
                     system=system_param,
                 ) as sdk_stream:
@@ -345,6 +366,18 @@ class ClaudeCodeExecutor(Invokable):
 
             if envelope.cancel_token.is_cancelled():
                 return
+
+            if self._observer is not None:
+                try:
+                    self._observer.after_round(
+                        tool_uses_this_round, results,
+                        {tp["tool_use_id"] for tp in tool_uses_this_round
+                         if tp["tool_use_id"] not in results},
+                    )
+                except Exception:  # an observer must never break the run
+                    import logging as _lg
+                    _lg.getLogger("axor.claude.executor").warning(
+                        "plane observer failed", exc_info=True)
 
             # build tool_result message for next round
             tool_result_blocks = [
