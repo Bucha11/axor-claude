@@ -324,6 +324,8 @@ class ClaudePlaneObserver:
     def _ship(self, answer: str) -> None:
         rec, plane = self.recorder, self.plane
         lines, run_id = rec.pending_lines(), rec.run_id
+        # the agent's answer closes the run on the plane
+        lines.append({"kind": "claim", "payload": {"text": answer, "structured": False}})
         record = rec.audit_record(self.node_id) if self.reputation is not None else None
         self._runs += 1
         probe_now = (self.health is not None and self._last_messages
