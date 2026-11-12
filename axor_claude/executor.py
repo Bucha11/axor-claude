@@ -191,6 +191,17 @@ class ClaudeCodeExecutor(Invokable):
         """
         self._text_callback = callback
 
+    def probe_client(self):
+        """A synchronous client on the same key and endpoint — for the probe
+        localizer's search, which runs off the event loop. Built here because
+        the Anthropic SDK stays inside the executor."""
+        import anthropic
+
+        return anthropic.Anthropic(
+            api_key=self._client.api_key,
+            base_url=str(self._client.base_url),
+        )
+
     def set_observer(self, observer) -> None:
         """Attach a round observer: ``before_round(messages) -> messages`` (what
         is sent — operator excisions and injections apply here, never to the

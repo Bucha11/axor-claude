@@ -438,9 +438,7 @@ class ClaudePlaneObserver:
             return _raw(resp)
 
         def infer_sync(msgs: list[dict]) -> dict:
-            import anthropic
-            client = anthropic.Anthropic(api_key=ex._client.api_key,
-                                         base_url=str(ex._client.base_url))
+            client = ex.probe_client()
             extra, conv = _to_anthropic(msgs)
             resp = client.messages.create(
                 model=model, max_tokens=1024, messages=conv,

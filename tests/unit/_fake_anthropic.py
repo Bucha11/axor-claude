@@ -62,6 +62,5 @@ class FakeSync:
     def __init__(self, **kw): self.messages = NS(create=lambda **kw: _probe(kw))
 
 def install(session):
-    import anthropic
     session._executor._client = FakeAsync()
-    anthropic.Anthropic = FakeSync
+    session._executor.probe_client = FakeSync
